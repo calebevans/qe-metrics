@@ -4,6 +4,7 @@ import sys
 import click
 from pony import orm
 
+from pyhelper_utils.runners import function_runner_with_pdb
 from simple_logger.logger import get_logger
 from qe_metrics.libs.database import Database
 from qe_metrics.libs.jira import Jira
@@ -13,7 +14,28 @@ from qe_metrics.utils.product_utils import products_from_file
 LOGGER = get_logger(name="main-qe-metrics")
 
 
-@click.command()
+def qe_metrics_exec(products_file: str, config_file: str, pdb: bool, verbose_db: bool) -> None:
+    """Gather QE Metrics"""
+
+    with Database(config_file=config_file, verbose=verbose_db), Jira(config_file=config_file) as jira, orm.db_session:
+        # TODO: Run a cleanup of the database to remove old entries
+
+        for product_dict in products_from_file(products_file=products_file):
+            product, queries = product_dict.values()
+            for severity, query in queries.items():
+                LOGGER.info(f'Executing Jira query for "{product.name}" with severity "{severity}"')
+                try:
+                    create_update_issues(
+                        issues=jira.search(query=query),
+                        product=product,
+                        severity=severity,
+                        jira_server=jira.jira_config["server"],
+                    )
+                except Exception as ex:
+                    LOGGER.error(f'Failed to update issues for "{product.name}" with severity "{severity}": {ex}')
+
+
+@click.command("qe-metrics")
 @click.option(
     "--products-file",
     default=os.environ.get("QE_METRICS_PRODUCTS", "products.yaml"),
@@ -37,26 +59,18 @@ LOGGER = get_logger(name="main-qe-metrics")
     help="Verbose output of database connection.",
     type=click.BOOL,
 )
-def main(products_file: str, config_file: str, pdb: bool, verbose_db: bool) -> None:
-    """Gather QE Metrics"""
+def cli_entrypoint(products_file: str, config_file: str, pdb: bool, verbose_db: bool) -> None:
+    function_runner_with_pdb(
+        func=qe_metrics_exec,
+        products_file=products_file,
+        config_file=config_file,
+        pdb=pdb,
+        verbose_db=verbose_db,
+    )
 
-    with Database(config_file=config_file, verbose=verbose_db), Jira(config_file=config_file) as jira, orm.db_session:
-        # TODO: Run a cleanup of the database to remove old entries
 
-        for product_dict in products_from_file(products_file=products_file):
-            product, queries = product_dict.values()
-            for severity, query in queries.items():
-                LOGGER.info(f'Executing Jira query for "{product.name}" with severity "{severity}"')
-                try:
-                    create_update_issues(
-                        issues=jira.search(query=query),
-                        product=product,
-                        severity=severity,
-                        jira_server=jira.jira_config["server"],
-                    )
-                except Exception as ex:
-                    LOGGER.error(f'Failed to update issues for "{product.name}" with severity "{severity}": {ex}')
-
+if __name__ == "__main__":
+    cli_entrypoint()
 
 if __name__ == "__main__":
     should_raise = False
